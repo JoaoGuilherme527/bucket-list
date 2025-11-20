@@ -1,8 +1,17 @@
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap");
+@import "tailwindcss";
+
+
+@theme {
+  --font-sans: "Inter", sans-serif;
+}
+
 body {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-sans);
     scroll-behavior: smooth;
 }
+
+/* Seus estilos customizados continuam aqui: */
 .checkbox-wrapper input:checked + div {
     background-color: #10b981;
     border-color: #10b981;
@@ -10,28 +19,19 @@ body {
 .checkbox-wrapper input:checked + div svg {
     display: block;
 }
-/* Animação suave para o check */
 .checkbox-wrapper input:checked + div {
     transform: scale(1.05);
 }
 .checkbox-wrapper input:not(:checked) + div {
     transform: scale(1);
 }
-/* Animação de destaque ao clicar */
+
 @keyframes highlight {
-    0% {
-        background-color: #fef3c7;
-        transform: scale(1);
-    }
-    50% {
-        background-color: #fde68a;
-        transform: scale(1.02);
-    }
-    100% {
-        background-color: transparent;
-        transform: scale(1);
-    }
+    0% { background-color: #fef3c7; transform: scale(1); }
+    50% { background-color: #fde68a; transform: scale(1.02); }
+    100% { background-color: transparent; transform: scale(1); }
 }
-.highlight-card {
-    animation: highlight 2s ease-in-out;
+
+.animate-highlight { /* Renomeei para bater com seu código React */
+    animation: highlight 1s ease-in-out;
 }
