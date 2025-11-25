@@ -1,240 +1,507 @@
-import {useState, useEffect, useMemo} from "react"
-import Head from "next/head"
-import {bucketData} from "../data"
+import { useState, useEffect, useMemo } from "react";
+import Head from "next/head";
+
+// Definição dos tipos vindos do MongoDB
+interface BucketItem {
+    _id: string;
+    name: string;
+    desc: string;
+    checked: boolean;
+}
+
+interface BucketCategory {
+    _id: string;
+    category: string;
+    icon: string;
+    color: string;
+    items: BucketItem[];
+}
+
+// Lista de ícones disponíveis para seleção
+const AVAILABLE_ICONS = [
+    "fa-star", "fa-heart", "fa-pizza-slice", "fa-fish",
+    "fa-martini-glass", "fa-mug-hot", "fa-utensils", "fa-burger",
+    "fa-stopwatch", "fa-person-running", "fa-bicycle", "fa-dumbbell",
+    "fa-bed", "fa-couch", "fa-gamepad", "fa-music",
+    "fa-plane", "fa-umbrella-beach", "fa-mountain", "fa-car",
+    "fa-camera", "fa-book", "fa-landmark", "fa-palette"
+];
 
 export default function Home() {
-    // Estados
-    const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({})
-    const [lastClickedId, setLastClickedId] = useState<string | null>(null)
-    const [isLoaded, setIsLoaded] = useState(false)
+    const [categories, setCategories] = useState<BucketCategory[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [lastClickedId, setLastClickedId] = useState<string | null>(null);
 
-    // Carregar do LocalStorage
-    useEffect(() => {
-        const saved = localStorage.getItem("bucketListState")
-        if (saved) {
-            try {
-                setCheckedItems(JSON.parse(saved))
-            } catch (e) {
-                console.error("Erro ao carregar dados", e)
+    // Estados do Modal de Criação
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<'item' | 'category'>('item');
+
+    // Estados do Modal de Confirmação (Exclusão)
+    const [confirmModal, setConfirmModal] = useState<{
+        isOpen: boolean;
+        type: 'category' | 'item' | null;
+        catId: string | null;
+        itemId: string | null;
+        title: string;
+        message: string;
+    }>({ isOpen: false, type: null, catId: null, itemId: null, title: '', message: '' });
+
+    // Inputs
+    const [newCatName, setNewCatName] = useState("");
+    const [newCatIcon, setNewCatIcon] = useState("fa-star");
+    const [newItemName, setNewItemName] = useState("");
+    const [newItemDesc, setNewItemDesc] = useState("");
+    const [selectedCatForNewItem, setSelectedCatForNewItem] = useState("");
+
+    const fetchData = async () => {
+        try {
+            const res = await fetch('/api/bucket');
+            const data = await res.json();
+            if (data.success) {
+                setCategories(data.data);
             }
+        } catch (error) {
+            console.error("Erro ao buscar dados", error);
+        } finally {
+            setLoading(false);
         }
-        setIsLoaded(true)
-    }, [])
+    };
 
-    // Salvar no LocalStorage
     useEffect(() => {
-        if (isLoaded) {
-            localStorage.setItem("bucketListState", JSON.stringify(checkedItems))
+        fetchData();
+    }, []);
+
+    const handleSeed = async () => {
+        setLoading(true);
+        await fetch('/api/seed');
+        await fetchData();
+    };
+
+    const toggleItem = async (catId: string, itemId: string, currentStatus: boolean) => {
+        const newCategories = categories.map(cat => {
+            if (cat._id === catId) {
+                return {
+                    ...cat,
+                    items: cat.items.map(item => item._id === itemId ? { ...item, checked: !currentStatus } : item)
+                };
+            }
+            return cat;
+        });
+        setCategories(newCategories);
+
+        try {
+            await fetch('/api/bucket', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ categoryId: catId, itemId: itemId, checked: !currentStatus })
+            });
+        } catch (error) {
+            console.error("Erro ao salvar status", error);
+            fetchData();
         }
-    }, [checkedItems, isLoaded])
+    };
 
-    // Lógica de toggle (Marcar/Desmarcar)
-    const toggleItem = (id: string) => {
-        setCheckedItems((prev) => ({
-            ...prev,
-            [id]: !prev[id],
-        }))
-        // Removemos a lógica de scroll automático ao desmarcar para focar na navegação manual que você pediu
-    }
+    // --- Lógica de Exclusão ---
 
-    // Nova função: Rolar até a descrição e destacar
-    const scrollToDescription = (id: string) => {
-        // 1. Ativa a animação de highlight (reseta antes para garantir que re-anime se clicar 2x)
-        setLastClickedId(null)
-        setTimeout(() => setLastClickedId(id), 10)
+    const promptDeleteCategory = (cat: BucketCategory) => {
+        setConfirmModal({
+            isOpen: true,
+            type: 'category',
+            catId: cat._id,
+            itemId: null,
+            title: `Excluir "${cat.category}"?`,
+            message: `Tem certeza? Isso também excluirá todos os ${cat.items.length} itens dentro dela.`
+        });
+    };
 
-        // 2. Rola a página suavemente até o elemento
-        const element = document.getElementById(`desc-${id}`)
-        if (element) {
-            element.scrollIntoView({behavior: "smooth", block: "center"})
+    const promptDeleteItem = (catId: string, item: BucketItem) => {
+        setConfirmModal({
+            isOpen: true,
+            type: 'item',
+            catId: catId,
+            itemId: item._id,
+            title: `Excluir "${item.name}"?`,
+            message: "Quer mesmo remover este item da lista?"
+        });
+    };
+
+    const handleConfirmDelete = async () => {
+        if (!confirmModal.type) return;
+
+        // Optimistic Update (Remove da tela imediatamente)
+        if (confirmModal.type === 'category' && confirmModal.catId) {
+            setCategories(prev => prev.filter(c => c._id !== confirmModal.catId));
+
+            await fetch(`/api/bucket?id=${confirmModal.catId}`, { method: 'DELETE' });
         }
-    }
+        else if (confirmModal.type === 'item' && confirmModal.catId && confirmModal.itemId) {
+            setCategories(prev => prev.map(c => {
+                if (c._id === confirmModal.catId) {
+                    return { ...c, items: c.items.filter(i => i._id !== confirmModal.itemId) };
+                }
+                return c;
+            }));
 
-    // Reset
-    const resetList = () => {
-        if (confirm("Tem certeza que deseja resetar todo o progresso?")) {
-            setCheckedItems({})
-            window.scrollTo({top: 0, behavior: "smooth"})
+            await fetch(`/api/bucket?catId=${confirmModal.catId}&itemId=${confirmModal.itemId}`, { method: 'DELETE' });
         }
-    }
 
-    // Estatísticas
-    const stats = useMemo(() => {
-        let total = 0
-        let checked = 0
+        setConfirmModal({ ...confirmModal, isOpen: false });
+        // Recarrega em background para garantir sincronia
+        fetchData();
+    };
 
-        bucketData.forEach((cat, catIdx) => {
-            cat.items.forEach((_, itemIdx) => {
-                total++
-                const id = `${catIdx}-${itemIdx}`
-                if (checkedItems[id]) checked++
+    // --- Fim Lógica Exclusão ---
+
+    const handleAddCategory = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newCatName) return;
+
+        await fetch('/api/bucket', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                type: 'category',
+                data: {
+                    category: newCatName,
+                    icon: newCatIcon,
+                    color: "text-gray-500",
+                    items: []
+                }
             })
-        })
+        });
+        setNewCatName("");
+        setNewCatIcon("fa-star");
+        setIsModalOpen(false);
+        fetchData();
+    };
 
-        const percentage = total === 0 ? 0 : Math.round((checked / total) * 100)
-        return {total, checked, percentage}
-    }, [checkedItems])
+    const handleAddItem = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newItemName || !selectedCatForNewItem) return;
 
-    // Previne erro de hidratação
-    if (!isLoaded) return null
+        await fetch('/api/bucket', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                type: 'item',
+                data: {
+                    categoryId: selectedCatForNewItem,
+                    item: {
+                        name: newItemName,
+                        desc: newItemDesc || "Sem descrição",
+                        checked: false
+                    }
+                }
+            })
+        });
+        setNewItemName("");
+        setNewItemDesc("");
+        setIsModalOpen(false);
+        fetchData();
+    };
+
+    const stats = useMemo(() => {
+        let total = 0;
+        let checked = 0;
+        categories.forEach((cat) => {
+            cat.items.forEach((item) => {
+                total++;
+                if (item.checked) checked++;
+            });
+        });
+        const percentage = total === 0 ? 0 : Math.round((checked / total) * 100);
+        return { percentage, total, checked };
+    }, [categories]);
+
+    const scrollToDescription = (catIndex: number, itemIndex: number) => {
+        const uniqueId = `${catIndex}-${itemIndex}`;
+        setLastClickedId(null);
+        setTimeout(() => setLastClickedId(uniqueId), 10);
+        const element = document.getElementById(`desc-${uniqueId}`);
+        if (element) {
+            element.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+    };
+
+    if (loading) return (
+        <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-500 flex-col gap-4">
+            <i className="fa-solid fa-circle-notch fa-spin text-3xl text-rose-500"></i>
+            <p>Carregando seus sonhos...</p>
+        </div>
+    );
 
     return (
-        <div className="bg-gray-50 text-gray-800 min-h-screen flex flex-col font-sans">
+        <div className="bg-gray-50 text-gray-800 min-h-screen flex flex-col font-sans relative">
             <Head>
-                <title>Nosso Bucket List & Guia</title>
+                <title>Nosso Bucket List</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" />
             </Head>
 
-            {/* Header Sticky */}
+            {/* --- HEADER --- */}
             <div className="bg-white shadow-sm sticky top-0 z-20">
                 <div className="max-w-md mx-auto px-4 py-4">
-                    <h1 className="text-2xl font-bold text-center text-gray-900">
-                        Nosso Roteiro <i className="fa-solid fa-heart text-rose-500"></i>
-                    </h1>
+                    <div className="flex justify-between items-center">
+                        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                            Nosso Roteiro <i className="fa-solid fa-heart text-rose-500 animate-pulse"></i>
+                        </h1>
+                        <button
+                            onClick={() => setIsModalOpen(true)}
+                            className="bg-gray-900 hover:bg-black text-white text-xs px-4 py-2 rounded-full transition-all font-medium shadow-md shadow-gray-300 flex items-center gap-2"
+                        >
+                            <i className="fa-solid fa-plus"></i> Adicionar
+                        </button>
+                    </div>
 
-                    {/* Barra de Progresso */}
                     <div className="mt-4">
                         <div className="flex justify-between text-xs font-semibold text-gray-500 mb-1">
-                            <span>Progresso</span>
+                            <span>Progresso ({stats.checked}/{stats.total})</span>
                             <span>{stats.percentage}%</span>
                         </div>
                         <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
                             <div
                                 className="bg-rose-500 h-2.5 rounded-full transition-all duration-500 shadow-lg shadow-rose-500/30"
-                                style={{width: `${stats.percentage}%`}}
+                                style={{ width: `${stats.percentage}%` }}
                             ></div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Lista de Itens */}
-            <div className="max-w-md mx-auto px-4 mt-6 space-y-6 grow w-full">
-                {bucketData.map((category, catIndex) => (
-                    <div key={catIndex} className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
-                        <div className="bg-gray-50 px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center shadow-sm">
-                                <i className={`fa-solid ${category.icon} ${category.color}`}></i>
+            {/* --- MODAL DE CRIAÇÃO --- */}
+            {isModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setIsModalOpen(false)}></div>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md relative z-10 overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                        <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 flex justify-between items-center shrink-0">
+                            <h3 className="font-bold text-gray-800">Adicionar Novo</h3>
+                            <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-gray-600 transition-colors"><i className="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <div className="flex border-b border-gray-100 shrink-0">
+                            <button onClick={() => setActiveTab('item')} className={`flex-1 py-3 text-sm font-medium transition-colors relative ${activeTab === 'item' ? 'text-rose-500 bg-white' : 'text-gray-500 bg-gray-50 hover:bg-gray-100'}`}>Novo Item {activeTab === 'item' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-rose-500"></div>}</button>
+                            <button onClick={() => setActiveTab('category')} className={`flex-1 py-3 text-sm font-medium transition-colors relative ${activeTab === 'category' ? 'text-rose-500 bg-white' : 'text-gray-500 bg-gray-50 hover:bg-gray-100'}`}>Nova Categoria {activeTab === 'category' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-rose-500"></div>}</button>
+                        </div>
+                        <div className="p-6 overflow-y-auto">
+                            {activeTab === 'item' && (
+                                <form onSubmit={handleAddItem} className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Categoria</label>
+                                        <div className="relative">
+                                            <select value={selectedCatForNewItem} onChange={e => setSelectedCatForNewItem(e.target.value)} className="w-full border border-gray-200 p-3 rounded-xl text-sm appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all" required>
+                                                <option value="">Selecione...</option>
+                                                {categories.map(cat => <option key={cat._id} value={cat._id}>{cat.category}</option>)}
+                                            </select>
+                                            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-400"><i className="fa-solid fa-chevron-down text-xs"></i></div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-1">O que vamos fazer?</label>
+                                        <input value={newItemName} onChange={e => setNewItemName(e.target.value)} placeholder="Ex: Jantar no Copacabana Palace..." className="w-full border border-gray-200 p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all" required />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Detalhes (Opcional)</label>
+                                        <textarea value={newItemDesc} onChange={e => setNewItemDesc(e.target.value)} placeholder="Alguma observação especial?" rows={3} className="w-full border border-gray-200 p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none transition-all" />
+                                    </div>
+                                    <button type="submit" className="w-full bg-rose-500 hover:bg-rose-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-rose-500/30 transition-all mt-2">Salvar Item</button>
+                                </form>
+                            )}
+                            {activeTab === 'category' && (
+                                <form onSubmit={handleAddCategory} className="space-y-5">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Nome da Categoria</label>
+                                        <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="Ex: Aventuras Radicais" className="w-full border border-gray-200 p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all" required />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-2">Escolha um Ícone</label>
+                                        <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                                            {AVAILABLE_ICONS.map((icon) => (
+                                                <button key={icon} type="button" onClick={() => setNewCatIcon(icon)} className={`aspect-square rounded-xl transition-all flex items-center justify-center text-lg ${newCatIcon === icon ? 'bg-rose-500 text-white shadow-md shadow-rose-500/30 scale-105 ring-2 ring-rose-200' : 'bg-gray-50 text-gray-400 hover:bg-gray-100 hover:text-gray-600'}`}><i className={`fa-solid ${icon}`}></i></button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <button type="submit" className="w-full bg-gray-900 hover:bg-black text-white py-3 rounded-xl font-bold shadow-lg shadow-gray-500/30 transition-all">Criar Categoria</button>
+                                </form>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- MODAL DE CONFIRMAÇÃO (DELETE) --- */}
+            {confirmModal.isOpen && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center px-4">
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })}></div>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm relative z-10 p-6 animate-in zoom-in-95 duration-200 text-center">
+
+                        <div className="w-12 h-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center mx-auto mb-4">
+                            <i className="fa-solid fa-trash-can text-xl"></i>
+                        </div>
+
+                        <h3 className="font-bold text-gray-800 text-lg mb-2">{confirmModal.title}</h3>
+                        <p className="text-gray-500 text-sm mb-6 leading-relaxed">{confirmModal.message}</p>
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })}
+                                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-xl font-medium transition-colors text-sm"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleConfirmDelete}
+                                className="flex-1 bg-rose-500 hover:bg-rose-600 text-white py-2.5 rounded-xl font-medium transition-colors text-sm shadow-lg shadow-rose-500/30"
+                            >
+                                Sim, excluir
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- CONTENT (LISTA) --- */}
+            {categories.length === 0 && !loading && (
+                <div className="max-w-md mx-auto px-4 mt-10 text-center">
+                    <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
+                        <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4"><i className="fa-solid fa-database text-rose-500 text-2xl"></i></div>
+                        <h3 className="font-bold text-gray-800 text-lg mb-2">Banco de Dados Vazio</h3>
+                        <p className="text-gray-500 text-sm mb-6">Seu bucket list está vazio. Quer importar os dados iniciais?</p>
+                        <button onClick={handleSeed} className="bg-rose-500 hover:bg-rose-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-rose-500/30 transition-all w-full"><i className="fa-solid fa-cloud-arrow-up mr-2"></i> Importar Dados</button>
+                    </div>
+                </div>
+            )}
+
+            <div className="max-w-md mx-auto px-4 mt-6 space-y-5 grow w-full pb-10">
+                {categories.map((category, catIndex) => (
+                    <div key={category._id} className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 hover:border-gray-200 transition-colors group/cat">
+                        <div className="bg-gray-50/50 px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center shadow-sm text-sm">
+                                    <i className={`fa-solid ${category.icon} ${category.color}`}></i>
+                                </div>
+                                <h2 className="font-bold text-gray-700 text-xs uppercase tracking-wider">{category.category}</h2>
                             </div>
-                            <h2 className="font-bold text-gray-700 text-sm uppercase tracking-wide">{category.category}</h2>
+                            {/* Botão Excluir Categoria (Sutil) */}
+                            <button
+                                onClick={() => promptDeleteCategory(category)}
+                                className="text-gray-300 hover:text-gray-500 transition-colors p-2 rounded-full opacity-0 group-hover/cat:opacity-100 focus:opacity-100"
+                                title="Excluir Categoria"
+                            >
+                                <i className="fa-solid fa-trash text-xs"></i>
+                            </button>
                         </div>
 
                         <div className="divide-y divide-gray-50">
                             {category.items.map((item, itemIdx) => {
-                                const id = `${catIndex}-${itemIdx}`
-                                const isChecked = !!checkedItems[id]
-
                                 return (
-                                    <div
-                                        key={id}
-                                        className="flex items-center px-4 py-3 hover:bg-gray-50 transition-colors group justify-between"
-                                    >
-                                        <div className="flex items-center gap-3 overflow-hidden">
-                                            {/* 1. CHECKBOX: Isolado em um label para só ele ativar o check */}
-                                            <label className="cursor-pointer relative flex items-center checkbox-wrapper shrink-0 p-1 -ml-1">
+                                    <div key={item._id} className="flex items-center px-4 py-3 hover:bg-gray-50 transition-colors group justify-between cursor-pointer">
+                                        <div className="flex items-center gap-3 overflow-hidden flex-1">
+                                            <label className="cursor-pointer relative flex items-center checkbox-wrapper shrink-0 p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors">
                                                 <input
                                                     type="checkbox"
                                                     className="peer sr-only"
-                                                    checked={isChecked}
-                                                    onChange={() => toggleItem(id)}
+                                                    checked={item.checked}
+                                                    onChange={() => toggleItem(category._id, item._id, item.checked)}
                                                 />
-                                                <div
-                                                    className={`
-                                                        w-5 h-5 border-2 rounded transition-all duration-200 flex items-center justify-center
-                                                        ${isChecked ? "bg-emerald-500 border-emerald-500 scale-105" : "border-gray-300 bg-white hover:border-gray-400"}
-                                                        `}
-                                                >
-                                                    <svg
-                                                        className={`w-3 h-3 text-white fill-current ${isChecked ? "block" : "hidden"}`}
-                                                        viewBox="0 0 20 20"
-                                                    >
+                                                <div className={`w-5 h-5 border-2 rounded transition-all duration-200 flex items-center justify-center ${item.checked ? "bg-emerald-500 border-emerald-500 scale-105" : "border-gray-300 bg-white group-hover:border-gray-400"}`}>
+                                                    <svg className={`w-3 h-3 text-white fill-current ${item.checked ? "block" : "hidden"}`} viewBox="0 0 20 20">
                                                         <path d="M0 11l2-2 5 5L18 3l2 2L7 18z" />
                                                     </svg>
                                                 </div>
                                             </label>
 
-                                            {/* 2. TEXTO: Agora é clicável e leva para a descrição */}
-                                            <button
-                                                onClick={() => scrollToDescription(id)}
-                                                className={`text-sm text-left truncate transition-all duration-200 hover:text-rose-500 ${
-                                                    isChecked ? "text-gray-400 line-through" : "text-gray-700"
-                                                }`}
-                                            >
+                                            <span
+                                                onClick={(e) => {
+                                                    // Previne clique no container se clicar nos botões
+                                                    const target = e.target as HTMLElement;
+                                                    if (target.tagName !== 'INPUT' && !target.closest('button')) {
+                                                        scrollToDescription(catIndex, itemIdx);
+                                                    }
+                                                }}
+                                                className={`text-sm text-left truncate transition-all duration-200 ${item.checked ? "text-gray-400 line-through decoration-gray-300" : "text-gray-700 font-medium"}`}>
                                                 {item.name}
-                                            </button>
+                                            </span>
                                         </div>
 
-                                        {/* 3. LINK/BOTÃOZINHO: Ícone visual para indicar 'Ver detalhes' */}
-                                        <button
-                                            onClick={() => scrollToDescription(id)}
-                                            className="text-gray-300 hover:text-rose-500 hover:bg-rose-50 p-1.5 rounded-full transition-all shrink-0 ml-2"
-                                            title="Ver detalhes"
-                                        >
-                                            <i className="fa-solid fa-circle-info text-xs"></i>
-                                        </button>
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                onClick={() => scrollToDescription(catIndex, itemIdx)}
+                                                className="text-gray-300 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-full transition-all opacity-0 group-hover:opacity-100"
+                                                title="Ver detalhes"
+                                            >
+                                                <i className="fa-solid fa-circle-info text-xs"></i>
+                                            </button>
+
+                                            {/* Botão Excluir Item (Sutil) */}
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    promptDeleteItem(category._id, item);
+                                                }}
+                                                className="text-gray-300 hover:text-gray-500 hover:bg-gray-100 p-2 rounded-full transition-all opacity-0 group-hover:opacity-100"
+                                                title="Excluir Item"
+                                            >
+                                                <i className="fa-solid fa-trash text-xs"></i>
+                                            </button>
+                                        </div>
                                     </div>
-                                )
+                                );
                             })}
                         </div>
                     </div>
                 ))}
             </div>
 
-            {/* Rodapé e Botões */}
-            <div className="max-w-md mx-auto px-4 mt-12 text-center w-full">
-                <div className="mb-4 flex items-center justify-center gap-2 text-xs text-emerald-600 bg-emerald-50 py-2 px-4 rounded-full w-fit mx-auto border border-emerald-100">
-                    <i className="fa-solid fa-cloud-arrow-up"></i>
-                    Progresso salvo automaticamente
-                </div>
-                <button onClick={resetList} className="text-xs text-gray-400 hover:text-red-500 underline transition-colors">
-                    Resetar toda a lista
-                </button>
-            </div>
+            {/* Área de Detalhes (Fundo da página) */}
+            {categories.length > 0 && (
+                <>
+                    <div className="max-w-md mx-auto px-4 mb-6 w-full">
+                        <div className="border-t border-gray-200 relative">
+                            <span className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-50 px-4 text-gray-400 text-xs font-bold uppercase tracking-widest">
+                                Detalhes
+                            </span>
+                        </div>
+                    </div>
 
-            {/* Divisória */}
-            <div className="max-w-md mx-auto px-4 mt-12 mb-6 w-full">
-                <div className="border-t border-gray-200 relative">
-                    <span className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-50 px-4 text-gray-400 text-sm font-medium">
-                        Guia Detalhado
-                    </span>
-                </div>
-            </div>
+                    <div className="max-w-md mx-auto px-4 pb-20 space-y-4 w-full">
+                        {categories.map((cat, catIndex) =>
+                            cat.items.map((item, itemIdx) => {
+                                const uniqueId = `${catIndex}-${itemIdx}`;
+                                const isHighlight = lastClickedId === uniqueId;
 
-            {/* Descrições (Cards) */}
-            <div className="max-w-md mx-auto px-4 pb-20 space-y-4 w-full">
-                {bucketData.map((cat, catIndex) =>
-                    cat.items.map((item, itemIdx) => {
-                        const id = `${catIndex}-${itemIdx}`
-                        const isHighlight = lastClickedId === id
+                                return (
+                                    <div
+                                        key={`desc-${uniqueId}`}
+                                        id={`desc-${uniqueId}`}
+                                        className={`bg-white p-5 rounded-xl border border-gray-100 shadow-sm transition-all duration-500 scroll-mt-32 ${isHighlight ? "animate-highlight ring-2 ring-yellow-400/50 shadow-yellow-100" : ""}`}
+                                    >
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div>
+                                                <h3 className="font-bold text-gray-800 text-sm mb-1.5 flex items-center gap-2">
+                                                    {item.name}
+                                                    {item.checked && (
+                                                        <span className="text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">
+                                                            Concluído
+                                                        </span>
+                                                    )}
+                                                </h3>
+                                                <p className="text-gray-500 text-xs leading-relaxed">{item.desc}</p>
+                                            </div>
+                                            <div className={`text-xl ${cat.color} opacity-20`}>
+                                                <i className={`fa-solid ${cat.icon}`}></i>
+                                            </div>
+                                        </div>
 
-                        return (
-                            <div
-                                key={`desc-${id}`}
-                                id={`desc-${id}`}
-                                className={`
-                    bg-white p-4 rounded-lg border border-gray-100 shadow-sm transition-all duration-500 scroll-mt-24
-                    ${isHighlight ? "animate-highlight ring-2 ring-yellow-200" : ""}
-                `}
-                            >
-                                <h3 className="font-bold text-gray-800 text-sm mb-1 flex items-center gap-2">
-                                    {item.name}
-                                    {checkedItems[id] && (
-                                        <span className="text-xs text-emerald-500 bg-emerald-50 px-2 py-0.5 rounded-full font-normal">
-                                            Feito
-                                        </span>
-                                    )}
-                                </h3>
-                                <p className="text-gray-500 text-xs leading-relaxed">{item.desc}</p>
-                                <div className="mt-2 flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
-                                    <i className={`fa-solid ${cat.icon} text-gray-300`}></i>
-                                    {cat.category}
-                                </div>
-                            </div>
-                        )
-                    })
-                )}
-            </div>
+                                        <div className="mt-3 pt-3 border-t border-gray-50 flex items-center gap-1.5 text-[10px] text-gray-400 uppercase tracking-wider font-bold">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                                            {cat.category}
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                </>
+            )}
         </div>
-    )
+    );
 }
