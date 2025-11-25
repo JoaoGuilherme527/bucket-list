@@ -33,14 +33,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         break;
 
       case 'PUT':
-        const { categoryId, itemId, checked } = req.body;
+        const { categoryId, itemId, checked, name, desc } = req.body;
         
+        // Monta o objeto de atualização dinamicamente
+        const updateFields: Record<string, any> = {};
+        
+        if (checked !== undefined) updateFields["items.$.checked"] = checked;
+        if (name !== undefined) updateFields["items.$.name"] = name;
+        if (desc !== undefined) updateFields["items.$.desc"] = desc;
+
         const updated = await Category.findOneAndUpdate(
           { "_id": categoryId, "items._id": itemId },
           { 
-            "$set": {
-              "items.$.checked": checked
-            }
+            "$set": updateFields
           },
           { new: true }
         );
@@ -51,7 +56,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
          const { id, catId, itemId: itemToDeleteId } = req.query;
 
          // Caso 1: Excluir Item Específico
-         // (Usa $pull para remover do array)
          if (catId && itemToDeleteId) {
             await Category.findByIdAndUpdate(
                 catId,
